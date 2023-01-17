@@ -1,5 +1,5 @@
 FROM nvidia/cuda:11.3.0-cudnn8-runtime-ubuntu18.04
-
+SHELL ["/bin/bash", "-c"]
 USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -36,10 +36,9 @@ RUN wget -qO - https://packages.irods.org/irods-signing-key.asc | apt-key add - 
 RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
     /bin/bash ~/miniconda.sh -b -p /opt/conda
 
-ENV PATH=$CONDA_DIR/bin:$PATH
 
 ENV CONDA_DIR=/opt/conda \
-    SHELL=/bin/bash \
+    SHELL=bash \
     NB_USER="${NB_USER}" \
     NB_UID=${NB_UID} \
     NB_GID=${NB_GID} \
@@ -100,36 +99,27 @@ WORKDIR /home/jovyan
 
 RUN conda update -n base conda \
     && conda install -c conda-forge mamba --yes \
-    && mamba install -c conda-forge --yes nodejs jupyterlab ipykernel 
-
-# Rebuild the Jupyter Lab with new tools
-RUN jupyter lab build
+    && mamba install -n pytorch -c conda-forge --yes nodejs jupyterlab ipykernel \
+    && jupyter lab build
 
 # install iRODS plugin
-RUN conda install -c conda-forge nodejs -y
+RUN conda -n pytorch install -c conda-forge nodejs -y
 RUN pip install jupyterlab_irods==3.0.*
 
-# run as root again briefly to update jupyter with iRODS
-USER root
-
-RUN jupyter serverextension enable --py jupyterlab_irods
-RUN jupyter labextension install ijab
-
-USER jovyan
 
 EXPOSE 8888
 
 RUN conda create -n pytorch pytorch pytorch=1.12.1 cudatoolkit=11.3 torchvision==0.13.1 torchaudio==0.12.1 -c pytorch 
-RUN . /opt/conda/etc/profile.d/conda.sh && conda activate pytorch && python3 -m ipykernel install --user --name pytorch
+
 RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/jovyan/.bash_profile && \
     echo "conda deactivate" >> /home/jovyan/.bash_profile && \
     echo "conda activate pytorch" >> /home/jovyan/.bash_profile
+RUN . /opt/conda/etc/profile.d/conda.sh && conda activate pytorch && python3 -m ipykernel install --user --name pytorch 
+RUN source /home/qiime2/.bash_profile
 
-RUN source /home/jovyan/.bash_profile 
 
 
-
-RUN conda install -n pytorch -c conda-forge pytorch-lightning opencv && conda install -c rapidsai-nightly jupyterlab-nvdashboard mlflow
+RUN conda install -n pytorch -c conda-forge pytorch-lightning opencv && conda install -c rapidsai-nightly  jupyterlab-nvdashboard mlflow -c conda-forge
 
 # Extra copy of the conda environment in case we need it
 COPY environment.yml /home/jovyan/environment.yml
@@ -140,7 +130,7 @@ RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/jovyan/.bashrc && \
 
 # Resolves error for libcudart.so
 RUN echo "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda-11.3/targets/x86_64-linux/lib && source /etc/profile" >> /home/jovyan/.bashrc
-
+RUN source /home/jovyan/.bash_profile
 
 COPY entry.sh /bin
 RUN mkdir -p /home/jovyan/.irods
