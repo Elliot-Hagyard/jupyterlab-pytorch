@@ -1,15 +1,16 @@
-FROM nvidia/cuda:11.3.0-cudnn8-runtime-ubuntu18.04
+FROM nvcr.io/nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu20.04
 SHELL ["/bin/bash", "-c"]
 USER root
 
-ARG DEBIAN_FRONTEND=noninteractive
 #Bringing in Jupyter stack elements
 ARG NB_USER="jovyan"
 ARG NB_UID="1000"
 ARG NB_GID="100"
-
+# Avoid issues with timezone
+ENV TZ=US
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # Install a few dependencies for iCommands, text editing, and monitoring instances
-RUN apt update && \
+RUN apt update -y && \
     apt install -y lsb-release apt-transport-https curl gnupg2 libfuse2 gettext gcc less nodejs software-properties-common apt-utils glances htop nano wget
 
 
@@ -49,7 +50,6 @@ ENV CONDA_DIR=/opt/conda \
 ENV PATH="${CONDA_DIR}/bin:${PATH}" \
     HOME="/home/${NB_USER}"
 
-# Copy a script that we will use to correct permissions after running certain commands
 # Install Go
 RUN wget -q -c https://dl.google.com/go/go1.17.6.linux-amd64.tar.gz -O - | sudo tar -xz -C /usr/local
 ENV PATH=$PATH:/usr/local/go/bin 
@@ -70,69 +70,64 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | s
     apt update && \
     apt install -y gh
 
-# Install and configure jupyter lab.
-COPY jupyter_notebook_config.json /opt/conda/etc/jupyter/jupyter_notebook_config.json
 
 # Add sudo to jovyan user
 RUN apt update && \
-    apt install -y sudo 
+    apt install -y sudo && \
+    apt clean && \
+    rm -rf /var/lib/apt/lists/*
 #
 ARG LOCAL_USER=jovyan
 ARG PRIV_CMDS='/bin/ch*,/bin/cat,/bin/gunzip,/bin/tar,/bin/mkdir,/bin/ps,/bin/mv,/bin/cp,/usr/bin/apt*,/usr/bin/pip*,/bin/yum'
 
-RUN useradd -m -d /home/jovyan -u 1000 jovyan \
+RUN useradd -m -d /home/jovyan -u 1001 jovyan \
     && chown -R jovyan:jovyan /home/jovyan
+ENV SHELL=bash
 
 RUN usermod -aG sudo jovyan && \
     echo "$LOCAL_USER ALL=NOPASSWD: $PRIV_CMDS" >> /etc/sudoers
 
-
-
 # purge older nodejs
 RUN apt purge nodejs -y
 
-RUN chown -R 1000:1000 /opt/conda
+RUN chown -R 1001:1001 /opt/conda
 
 USER jovyan
 
 WORKDIR /home/jovyan
 
+RUN conda install -n base\
+    pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia
+
 RUN conda update -n base conda \
     && conda install -c conda-forge mamba --yes \
-    && mamba install -n pytorch -c conda-forge --yes nodejs jupyterlab ipykernel \
-    && jupyter lab build
+    && mamba install -c conda-forge --yes nodejs jupyterlab ipykernel && \
+    jupyter lab build
 
-# install iRODS plugin
-RUN conda -n pytorch install -c conda-forge nodejs -y
+RUN conda init && \
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/jovyan/.bash_profile && \
+    echo "conda deactivate" >> /home/jovyan/.bash_profile && \
+    echo "conda activate pytorch" >> /home/jovyan/.bash_profile 
+RUN echo "source .bash_profile" >> /home/jovyan/.bashrc
+
+RUN . /opt/conda/etc/profile.d/conda.sh && \
+    conda activate pytorch && python -m ipykernel install --name "jovyan" --user
+RUN source /home/jovyan/.bash_profile
+
+# Install and configure jupyter lab.
+COPY --chown=jovyan:jovyan jupyter_notebook_config.json /opt/conda/envs/pytorch/etc/jupyter/
+
+# install iRODS pluginx
 RUN pip install jupyterlab_irods==3.0.*
 
-
-EXPOSE 8888
-
-RUN conda create -n pytorch pytorch pytorch=1.12.1 cudatoolkit=11.3 torchvision==0.13.1 torchaudio==0.12.1 -c pytorch 
-
-RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/jovyan/.bash_profile && \
-    echo "conda deactivate" >> /home/jovyan/.bash_profile && \
-    echo "conda activate pytorch" >> /home/jovyan/.bash_profile
-RUN . /opt/conda/etc/profile.d/conda.sh && conda activate pytorch && python3 -m ipykernel install --user --name pytorch 
-RUN source /home/qiime2/.bash_profile
-
-
-
-RUN conda install -n pytorch -c conda-forge pytorch-lightning opencv && conda install -c rapidsai-nightly  jupyterlab-nvdashboard mlflow -c conda-forge
-
+RUN conda install -c conda-forge pytorch-lightning opencv && conda install -c rapidsai-nightly mlflow -c conda-forge
 # Extra copy of the conda environment in case we need it
 COPY environment.yml /home/jovyan/environment.yml
 
-# Activate the conda base in the image
-RUN echo ". /opt/conda/etc/profile.d/conda.sh" >> /home/jovyan/.bashrc && \
-    echo "conda activate base" >> /home/jovyan/.bashrc
-
 # Resolves error for libcudart.so
 RUN echo "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda-11.3/targets/x86_64-linux/lib && source /etc/profile" >> /home/jovyan/.bashrc
-RUN source /home/jovyan/.bash_profile
-
+EXPOSE 8888
 COPY entry.sh /bin
 RUN mkdir -p /home/jovyan/.irods
 
-ENTRYPOINT ["bash", "/bin/entry.sh"]
+ENTRYPOINT ["/bin/bash", "/bin/entry.sh"]
